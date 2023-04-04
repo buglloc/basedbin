@@ -1,78 +1,66 @@
-name: Docker CI
+---
+name: Docker Builds
 
+# Controls when the workflow will run
 on:
+  workflow_dispatch:
   push:
-    tags: 
-     - 'v*'
+    branches:
+      - master
+    tags:
+      - 'v*.*.*'
 
+permissions: 
+  contents: read
+  packages: write
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  docker-build:
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
+  build-basedbin:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout project
-        uses: actions/checkout@v2
+      # Get the repositery's code
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      # https://github.com/docker/setup-qemu-action
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v1 
+      # https://github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
         with:
-          username: wantguns
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Building the ${{ matrix.arch }} image
-        run: |
-          docker build . \
-            -t wantguns/bin:${{ matrix.arch }} \
-            --build-arg ARCH=${{ matrix.arch }}
-          mkdir -p artifacts/images
-          docker save wantguns/bin:${{ matrix.arch }} > artifacts/images/${{ matrix.arch }}.tar
-
-      - name: Pushing the ${{ matrix.arch }} image
-        run: |
-          docker push wantguns/bin:${{ matrix.arch }}
-
-      - name: Temporarily saving the image
-        uses: actions/upload-artifact@v2
+      - name: Docker meta
+        id: meta_basedbin
+        uses: docker/metadata-action@v4
         with:
-          name: docker-artifacts
-          path: artifacts/images
-          retention-days: 1 
+          # list of Docker images to use as base name for tags
+          images: |
+            ghcr.io/buglloc/basedbin
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
 
-
-  docker-push:
-    needs: docker-build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Login to DockerHub
-        uses: docker/login-action@v1 
+      - name: Build and push
+        uses: docker/build-push-action@v3
         with:
-          username: wantguns
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
-      - name: Retrieve saved images
-        uses: actions/download-artifact@v2
-        with:
-          name: docker-artifacts
-          path: artifacts/images
-
-      - name: Docker load images
-        run: |
-          pushd artifacts/images
-          docker load < amd64.tar
-          docker load < arm64.tar
-
-      - name: Creating a multi-arch manifest
-        run: |
-          docker manifest create \
-            wantguns/bin:latest \
-            --amend wantguns/bin:amd64 \
-            --amend wantguns/bin:arm64
-          
-          docker manifest annotate wantguns/bin:latest \
-            wantguns/bin:arm64 --arch arm64
-
-      - name: Push the manifest
-        run: |
-          docker manifest push wantguns/bin:latest
+          context: .
+          platforms: linux/amd64,linux/arm64/v8
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta_basedbin.outputs.tags }}
+          labels: ${{ steps.meta_basedbin.outputs.labels }}
